@@ -1,0 +1,39 @@
+
+{
+    "rules": [
+        {
+            "id": "LED_001",
+            "name": "LED current limiting",
+            "category": "component",
+            "description": "Check LED current against a configured current limit.",
+            "severity": "warning",
+            "max_current_ma": 20,
+            "limit_is_default": true,
+            "formula": "I = (Vs - Vf) / R",
+            "required_data": [
+                "supply_voltage",
+                "forward_voltage",
+                "resistance"
+            ],
+            "source": "LED manufacturer datasheet",
+            "notes": "20 mA is an illustrative default. Use the actual LED datasheet limit."
+        },
+        {
+            "id": "RES_001",
+            "name": "Resistor power rating",
+            "category": "component",
+            "description": "Check resistor power dissipation against its rated power.",
+            "severity": "warning",
+            "rated_power_w": 0.25,
+            "limit_is_default": true,
+            "formula": "P = I^2 * R",
+            "required_data": [
+                "current",
+                "resistance",
+                "rated_power"
+            ],
+            "source": "Resistor manufacturer datasheet",
+            "notes": "0.25 W is an illustrative default. Use the actual resistor rating."
+        }
+    ]
+}
