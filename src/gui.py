@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
     QHBoxLayout, QGridLayout, QLabel,
@@ -26,6 +26,14 @@ class CircuitSenseWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("CircuitSense")
+
+        icon_path = (
+            Path(__file__).resolve().parent.parent
+            / "assets"
+            / "ckt.png"
+        )
+        self.setWindowIcon(QIcon(str(icon_path)))
+
         self.resize(1200, 850)
         self.setMinimumSize(950, 700)
 
