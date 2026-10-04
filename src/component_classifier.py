@@ -7,6 +7,7 @@ def classify_component(component):
 
     # Check specific library IDs before general ones.
     library_rules = [
+        ("crystal", ("device:crystal", "device:resonator")),
         ("resistor", ("device:r_us", "device:r", "resistor")),
         ("capacitor", (
             "device:c_polarized",
@@ -40,15 +41,24 @@ def classify_component(component):
         ("switch", ("switch:",)),
         ("relay", ("relay:",)),
         ("transformer", ("transformer:",)),
-        ("crystal", ("device:crystal", "device:resonator")),
         ("motor", ("motor:",)),
     ]
 
     for category, prefixes in library_rules:
-        if any(library_id.startswith(p) for p in prefixes):
+        if any(
+            library_id.startswith(prefix)
+            if prefix.endswith(":")
+            else (
+                library_id == prefix
+                or library_id.startswith(prefix + ":")
+                or library_id.startswith(prefix + "_")
+            )
+            for prefix in prefixes
+        ):
             return category
 
-    # Fallback to the reference designator.
+    # Reference designators are a fallback for common component families.
+    # A Y/X prefix alone is not sufficient to identify a crystal.
     reference_rules = [
         ("led", ("LED",)),
         ("resistor", ("R",)),
@@ -62,7 +72,6 @@ def classify_component(component):
         ("switch", ("SW",)),
         ("relay", ("K",)),
         ("transformer", ("T",)),
-        ("crystal", ("Y", "X")),
         ("motor", ("M",)),
     ]
 

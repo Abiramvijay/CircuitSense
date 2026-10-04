@@ -1,6 +1,5 @@
 
 import sys
-import math
 import subprocess
 import tempfile
 from pathlib import Path
@@ -9,31 +8,40 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QHBoxLayout, QGridLayout, QFormLayout, QLabel,
+    QHBoxLayout, QGridLayout, QLabel,
     QPushButton, QFileDialog, QFrame, QTableWidget,
-    QTableWidgetItem, QMessageBox, QHeaderView, QLineEdit,
+    QTableWidgetItem, QMessageBox, QHeaderView,
     QStackedWidget, QScrollArea
 )
 from PySide6.QtSvgWidgets import QSvgWidget
 
 from netlist_reader import load_circuit
 from circuit_analyzer import analyze_circuit
+from component_classifier import classify_component_with_support
+from specification_extractor import extract_specifications
 
 
 class CircuitSenseWindow(QMainWindow):
-    def __init__(self, netlist_path=None):
+    def __init__(self, netlist_path=None, schematic_path=None):
         super().__init__()
 
         self.setWindowTitle("CircuitSense")
         self.resize(1200, 850)
         self.setMinimumSize(950, 700)
-        self.schematic_path = (
+
+        default_schematic = (
             Path(__file__).resolve().parent.parent
             / "data" / "schematics" / "CircuitSense_Test.kicad_sch"
         )
+
+        if schematic_path is None:
+            self.schematic_path = default_schematic
+        else:
+            self.schematic_path = Path(schematic_path).resolve()
+
         self._svg_tempdir = None
 
-        # Accept a netlist supplied by main.py.
+        # Accept a netlist supplied by the launcher or main.py.
         # Otherwise, load the default test netlist.
         if netlist_path is None:
             self.netlist_path = (
@@ -132,17 +140,6 @@ class CircuitSenseWindow(QMainWindow):
             QPushButton#secondary:hover {
                 background: #e2dcfa;
             }
-            QLineEdit {
-                background: #ffffff;
-                border: 1px solid #dfe1e9;
-                border-radius: 8px;
-                padding: 9px;
-                color: #22232b;
-                selection-background-color: #7057d9;
-            }
-            QLineEdit:focus {
-                border: 1px solid #7057d9;
-            }
             QTableWidget {
                 background: #ffffff;
                 alternate-background-color: #f8f9fc;
@@ -184,6 +181,7 @@ class CircuitSenseWindow(QMainWindow):
         """)
 
         self.build_ui()
+        self.refresh_overview()
 
     def card(self, object_name="card"):
         frame = QFrame()
@@ -330,51 +328,6 @@ class CircuitSenseWindow(QMainWindow):
         file_layout.addLayout(file_row)
         content_layout.addWidget(file_card)
 
-        # Electrical specifications
-        specs_card = self.card()
-        specs_layout = QVBoxLayout(specs_card)
-        specs_layout.setContentsMargins(15, 13, 15, 13)
-        specs_layout.setSpacing(10)
-
-        specs_heading = QLabel("ELECTRICAL SPECIFICATIONS")
-        specs_heading.setObjectName("metric_title")
-        specs_layout.addWidget(specs_heading)
-
-        form = QGridLayout()
-        form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(8)
-
-        def make_field(label_text, placeholder):
-            label = QLabel(label_text)
-            label.setObjectName("field_label")
-
-            field = QLineEdit()
-            field.setPlaceholderText(placeholder)
-            field.setClearButtonEnabled(True)
-
-            return label, field
-
-        label, self.supply_voltage_input = make_field(
-            "Supply voltage (V)", "e.g. 5"
-        )
-        form.addWidget(label, 0, 0)
-        form.addWidget(self.supply_voltage_input, 0, 1)
-
-        label, self.forward_voltage_input = make_field(
-            "LED forward voltage (V)", "e.g. 2"
-        )
-        form.addWidget(label, 0, 2)
-        form.addWidget(self.forward_voltage_input, 0, 3)
-
-        label, self.resistor_rating_input = make_field(
-            "Resistor rating (W)", "e.g. 0.25"
-        )
-        form.addWidget(label, 1, 0)
-        form.addWidget(self.resistor_rating_input, 1, 1)
-
-        specs_layout.addLayout(form)
-        content_layout.addWidget(specs_card)
-
         # Summary cards
         metrics = QGridLayout()
         metrics.setHorizontalSpacing(10)
@@ -491,9 +444,12 @@ class CircuitSenseWindow(QMainWindow):
         )
         layout.addWidget(components_heading)
 
-        self.components_table = QTableWidget(0, 3)
+        self.components_table = QTableWidget(0, 5)
         self.components_table.setHorizontalHeaderLabels(
-            ["Reference", "Value", "Library symbol"]
+            [
+                "Reference", "Type", "Value",
+                "Library symbol", "Specifications",
+            ]
         )
         self.components_table.setAlternatingRowColors(True)
         self.components_table.setEditTriggers(
@@ -511,7 +467,13 @@ class CircuitSenseWindow(QMainWindow):
             1, QHeaderView.ResizeMode.ResizeToContents
         )
         component_header.setSectionResizeMode(
-            2, QHeaderView.ResizeMode.Stretch
+            2, QHeaderView.ResizeMode.ResizeToContents
+        )
+        component_header.setSectionResizeMode(
+            3, QHeaderView.ResizeMode.Stretch
+        )
+        component_header.setSectionResizeMode(
+            4, QHeaderView.ResizeMode.Stretch
         )
         layout.addWidget(self.components_table, 1)
 
@@ -560,10 +522,23 @@ class CircuitSenseWindow(QMainWindow):
             for component in components:
                 row = self.components_table.rowCount()
                 self.components_table.insertRow(row)
+                recognition = classify_component_with_support(component)
+                support_info = recognition.get("support_info") or {}
+                component_type = support_info.get(
+                    "name",
+                    recognition.get("type", "unknown")
+                    .replace("_", " ")
+                    .title(),
+                )
+                specification_data = extract_specifications(component)
                 values = [
                     component.get("reference", "—"),
+                    component_type,
                     component.get("value", "—"),
                     component.get("lib_id", "—"),
+                    self.format_specifications(
+                        specification_data.get("specifications", {})
+                    ),
                 ]
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(str(value or "—"))
@@ -587,6 +562,24 @@ class CircuitSenseWindow(QMainWindow):
             QMessageBox.warning(
                 self, "Overview could not be loaded", str(error)
             )
+
+    @staticmethod
+    def format_specifications(specifications):
+        """Format extracted specifications for their component row."""
+        values = []
+        for name, details in specifications.items():
+            value = details.get("value")
+            unit = details.get("unit", "")
+            if isinstance(value, (int, float)):
+                if unit == "ohm":
+                    formatted_value = f"{value:g} Ω"
+                else:
+                    formatted_value = f"{value:g} {unit}".strip()
+            else:
+                formatted_value = str(value)
+            label = name.replace("_", " ").capitalize()
+            values.append(f"{label}: {formatted_value}")
+        return "; ".join(values) if values else "—"
 
     def build_schematic_page(self):
         page = QFrame()
@@ -736,44 +729,6 @@ class CircuitSenseWindow(QMainWindow):
         elif selected == "Schematic":
             self.load_schematic_svg()
 
-    
-    def autofill_specifications(self):
-        """Fill GUI inputs using explicit KiCad specifications."""
-        from specification_extractor import extract_specifications
-
-        if not self.netlist_path.is_file():
-            return
-
-        try:
-            circuit = load_circuit(str(self.netlist_path))
-            extracted = {}
-
-            for component in circuit["components"]:
-                specs = extract_specifications(component)
-                for name, details in specs["specifications"].items():
-                    extracted.setdefault(name, []).append(
-                        details["value"]
-                    )
-
-            field_mapping = {
-                "supply_voltage": self.supply_voltage_input,
-                "forward_voltage": self.forward_voltage_input,
-                "power_rating": self.resistor_rating_input,
-            }
-
-            for name, field in field_mapping.items():
-                if field.text().strip():
-                    continue
-
-                values = extracted.get(name, [])
-                if len(values) == 1:
-                    field.setText(str(values[0]))
-
-        except (OSError, ValueError, KeyError) as error:
-            self.status.setText(f"●  DETECTION FAILED: {error}")
-        (f"●  DETECTION FAILED: {error}")
-
-    
     def browse_file(self):
         filename, _ = QFileDialog.getOpenFileName(
             self,
@@ -785,49 +740,7 @@ class CircuitSenseWindow(QMainWindow):
         if filename:
             self.netlist_path = Path(filename).resolve()
             self.file_label.setText(str(self.netlist_path))
-            self.autofill_specifications()
             self.status.setText("●  READY")
-
-
-    def read_optional_number(self, field, label, minimum):
-        text = field.text().strip()
-
-        if not text:
-            return None
-
-        try:
-            value = float(text)
-        except ValueError:
-            raise ValueError(
-                f"{label} must be a valid number."
-            )
-
-        if not math.isfinite(value) or value < minimum:
-            raise ValueError(
-                f"{label} must be a finite number "
-                f"greater than or equal to {minimum}."
-            )
-
-        return value
-
-    def get_analysis_inputs(self):
-        return {
-            "supply_voltage": self.read_optional_number(
-                self.supply_voltage_input,
-                "Supply voltage",
-                0
-            ),
-            "forward_voltage": self.read_optional_number(
-                self.forward_voltage_input,
-                "LED forward voltage",
-                0
-            ),
-            "resistor_rated_power_w": self.read_optional_number(
-                self.resistor_rating_input,
-                "Resistor rating",
-                0
-            )
-        }
 
     def analyze(self):
         if not self.netlist_path.is_file():
@@ -839,22 +752,11 @@ class CircuitSenseWindow(QMainWindow):
             return
 
         try:
-            analysis_inputs = self.get_analysis_inputs()
-        except ValueError as error:
-            QMessageBox.warning(
-                self,
-                "Invalid specification",
-                str(error)
-            )
-            return
-
-        try:
             self.status.setText("●  ANALYZING")
             self.analyze_button.setEnabled(False)
             QApplication.processEvents()
 
             circuit = load_circuit(str(self.netlist_path))
-            circuit["analysis_inputs"] = analysis_inputs
 
             results = analyze_circuit(circuit)
             self.show_results(results)

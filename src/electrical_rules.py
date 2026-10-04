@@ -1,37 +1,13 @@
+import math
+
 from analysis_result import AnalysisResult
 from component_classifier import classify_component_with_support
+from specification_extractor import parse_engineering_value
 
 
 def parse_resistance(value):
     """Parse a resistor value into ohms."""
-
-    if value is None:
-        return None
-
-    text = str(value).strip().lower()
-
-    if not text:
-        return None
-
-    multipliers = {
-        "k": 1_000,
-        "m": 1_000_000,
-        "meg": 1_000_000,
-    }
-
-    try:
-        for suffix, multiplier in multipliers.items():
-            if text.endswith(suffix):
-                number = float(
-                    text[:-len(suffix)].strip()
-                )
-
-                return number * multiplier
-
-        return float(text)
-
-    except (TypeError, ValueError):
-        return None
+    return parse_engineering_value(value, "ohm")
 
 
 def check_resistor_values(model):
@@ -57,11 +33,17 @@ def check_resistor_values(model):
             "Unknown resistor"
         )
 
-        value = component.get("value")
-
-        resistance = parse_resistance(value)
-
+        resistance = model.get_component_specification(
+            reference,
+            "resistance",
+        )
         if resistance is None:
+            resistance = parse_resistance(component.get("value"))
+
+        if (
+            not isinstance(resistance, (int, float))
+            or not math.isfinite(float(resistance))
+        ):
             results.append(
                 AnalysisResult(
                     "RES_002",
@@ -79,6 +61,7 @@ def check_resistor_values(model):
             )
 
         elif resistance <= 0:
+            value = component.get("value")
             results.append(
                 AnalysisResult(
                     "RES_002",

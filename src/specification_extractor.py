@@ -26,6 +26,7 @@ VALUE_SPECS = {
     "resistor": ("resistance", "ohm"),
     "capacitor": ("capacitance", "F"),
     "inductor": ("inductance", "H"),
+    "crystal": ("frequency", "Hz"),
 }
 
 # Names commonly used for electrical properties.
@@ -109,14 +110,42 @@ def parse_engineering_value(value, expected_unit):
     match = re.fullmatch(
         r"([+-]?(?:\d+(?:\.\d*)?|\.\d+))"
         r"(meg|[pnumµkKMgG]?)"
-        r"(ohm|Ω|[FHVWA]|[fvhvwa])?",
+        r"(ohm|Ω|Hz|[FHVWA]|[fvhvwa])?",
         text,
     )
 
-    if not match:
-        return None
-
-    number_text, suffix, unit = match.groups()
+    if match:
+        number_text, suffix, unit = match.groups()
+    else:
+        # KiCad resistor notation may place fractional digits after the
+        # engineering suffix, for example 1k5 for 1.5 kΩ.
+        embedded_suffix = re.fullmatch(
+            r"([+-]?\d+)([pnumµkKMgG])(\d+)"
+            r"(ohm|Ω|Hz|[FHVWA]|[fvhvwa])?",
+            text,
+        )
+        if embedded_suffix:
+            whole, suffix, fraction, unit = embedded_suffix.groups()
+            number_text = f"{whole}.{fraction}"
+        elif expected_unit.lower() == "ohm":
+            # R is also used as the decimal marker in resistor values
+            # such as 100R or 4R7.
+            resistance_notation = re.fullmatch(
+                r"([+-]?\d*)[rR](\d*)",
+                text,
+            )
+            if not resistance_notation:
+                return None
+            whole, fraction = resistance_notation.groups()
+            if not whole and not fraction:
+                return None
+            number_text = whole or "0"
+            if fraction:
+                number_text = f"{number_text}.{fraction}"
+            suffix = ""
+            unit = None
+        else:
+            return None
 
     if unit:
         normalized_unit = unit.lower()
