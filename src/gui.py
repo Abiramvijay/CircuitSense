@@ -2,6 +2,7 @@
 import sys
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -15,6 +16,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtSvgWidgets import QSvgWidget
 
+from kicad_erc import run_schematic_erc
+from kicad_exporter import export_schematic_netlist
 from netlist_reader import load_circuit
 from circuit_analyzer import analyze_circuit
 from component_classifier import classify_component_with_support
@@ -43,11 +46,22 @@ class CircuitSenseWindow(QMainWindow):
         )
 
         if schematic_path is None:
-            self.schematic_path = default_schematic
+            if netlist_path is None:
+                self.schematic_path = default_schematic
+            else:
+                matching_schematic = Path(
+                    netlist_path
+                ).resolve().with_suffix(".kicad_sch")
+                self.schematic_path = (
+                    matching_schematic
+                    if matching_schematic.is_file()
+                    else None
+                )
         else:
             self.schematic_path = Path(schematic_path).resolve()
 
         self._svg_tempdir = None
+        self._analysis_tempdir = None
 
         # Accept a netlist supplied by the launcher or main.py.
         # Otherwise, load the default test netlist.
@@ -508,9 +522,16 @@ class CircuitSenseWindow(QMainWindow):
                 self.overview_nets_value.findChild(
                     QLabel, "metric_value"
                 ).setText("—")
+                findings_count = getattr(
+                    self, "last_findings_count", None
+                )
                 self.overview_findings_value.findChild(
                     QLabel, "metric_value"
-                ).setText(str(getattr(self, "last_findings_count", "—")))
+                ).setText(str(
+                    findings_count
+                    if findings_count is not None
+                    else "—"
+                ))
                 return
 
             circuit = load_circuit(str(self.netlist_path))
@@ -523,9 +544,16 @@ class CircuitSenseWindow(QMainWindow):
             self.overview_nets_value.findChild(
                 QLabel, "metric_value"
             ).setText(str(len(nets)))
+            findings_count = getattr(
+                self, "last_findings_count", None
+            )
             self.overview_findings_value.findChild(
                 QLabel, "metric_value"
-            ).setText(str(getattr(self, "last_findings_count", "—")))
+            ).setText(str(
+                findings_count
+                if findings_count is not None
+                else "—"
+            ))
 
             for component in components:
                 row = self.components_table.rowCount()
@@ -601,13 +629,15 @@ class CircuitSenseWindow(QMainWindow):
         layout.addWidget(heading)
 
         description = QLabel(
-            "View a KiCad schematic exported as SVG. Select the .kicad_sch file."
+            "Select a KiCad schematic to update analysis and view its SVG."
         )
         description.setObjectName("section_subtitle")
         layout.addWidget(description)
 
         file_row = QHBoxLayout()
-        self.schematic_file_label = QLabel(str(self.schematic_path))
+        self.schematic_file_label = QLabel(
+            str(self.schematic_path or "No schematic selected")
+        )
         self.schematic_file_label.setObjectName("file_label")
         self.schematic_file_label.setWordWrap(True)
         self.schematic_file_label.setTextInteractionFlags(
@@ -648,21 +678,61 @@ class CircuitSenseWindow(QMainWindow):
         filename, _ = QFileDialog.getOpenFileName(
             self,
             "Select KiCad schematic",
-            str(self.schematic_path.parent),
+            str(
+                self.schematic_path.parent
+                if self.schematic_path is not None
+                else Path.home()
+            ),
             "KiCad schematics (*.kicad_sch)"
         )
         if filename:
-            self.schematic_path = Path(filename).resolve()
+            schematic_path = Path(filename).resolve()
+            analysis_tempdir = None
+
+            try:
+                analysis_tempdir, netlist_path = (
+                    export_schematic_netlist(schematic_path)
+                )
+                load_circuit(str(netlist_path))
+            except (
+                OSError,
+                RuntimeError,
+                ValueError,
+                KeyError,
+                ET.ParseError,
+            ) as error:
+                if analysis_tempdir is not None:
+                    analysis_tempdir.cleanup()
+                QMessageBox.critical(
+                    self,
+                    "Schematic could not be loaded",
+                    str(error),
+                )
+                return
+
+            previous_tempdir = self._analysis_tempdir
+            self._analysis_tempdir = analysis_tempdir
+            self.netlist_path = netlist_path
+            self.file_label.setText(str(self.netlist_path))
+            self.schematic_path = schematic_path
             self.schematic_file_label.setText(str(self.schematic_path))
+            if previous_tempdir is not None:
+                previous_tempdir.cleanup()
+            self.clear_results()
+            self.status.setText("●  READY")
+            self.refresh_overview()
             self.load_schematic_svg()
 
     def load_schematic_svg(self):
         if not hasattr(self, "schematic_view"):
             return
 
-        if not self.schematic_path.is_file():
+        if (
+            self.schematic_path is None
+            or not self.schematic_path.is_file()
+        ):
             self.schematic_message.setText(
-                "Schematic file not found. Use Browse Schematic to select a .kicad_sch file."
+                "No matching schematic found. Use Browse Schematic to select a .kicad_sch file."
             )
             return
 
@@ -702,6 +772,15 @@ class CircuitSenseWindow(QMainWindow):
             self.schematic_message.setText(
                 f"Could not run the KiCad exporter: {error}"
             )
+
+    def closeEvent(self, event):
+        for temp_dir in (
+            self._svg_tempdir,
+            self._analysis_tempdir,
+        ):
+            if temp_dir is not None:
+                temp_dir.cleanup()
+        super().closeEvent(event)
 
     def metric_card(self, title, value, name, color):
         frame = self.card()
@@ -746,8 +825,22 @@ class CircuitSenseWindow(QMainWindow):
         )
 
         if filename:
+            previous_tempdir = self._analysis_tempdir
+            self._analysis_tempdir = None
             self.netlist_path = Path(filename).resolve()
             self.file_label.setText(str(self.netlist_path))
+            self.schematic_path = self.netlist_path.with_suffix(
+                ".kicad_sch"
+            )
+            if not self.schematic_path.is_file():
+                self.schematic_path = None
+            self.schematic_file_label.setText(
+                str(self.schematic_path or "No schematic selected")
+            )
+            if previous_tempdir is not None:
+                previous_tempdir.cleanup()
+            self.clear_results()
+            self.load_schematic_svg()
             self.status.setText("●  READY")
 
     def analyze(self):
@@ -767,6 +860,10 @@ class CircuitSenseWindow(QMainWindow):
             circuit = load_circuit(str(self.netlist_path))
 
             results = analyze_circuit(circuit)
+            if self.schematic_path is not None:
+                results.extend(
+                    run_schematic_erc(self.schematic_path)
+                )
             self.show_results(results)
 
             self.status.setText("●  COMPLETE")
@@ -788,7 +885,23 @@ class CircuitSenseWindow(QMainWindow):
         finally:
             self.analyze_button.setEnabled(True)
 
+    def clear_results(self):
+        self.last_findings_count = None
+        self.results_table.setRowCount(0)
+        for metric in (
+            self.findings_value,
+            self.warnings_value,
+            self.errors_value,
+        ):
+            metric.findChild(
+                QLabel, "metric_value"
+            ).setText("—")
+
     def show_results(self, results):
+        results = [
+            result for result in results
+            if result.rule_id != "ERC_LIB_SYMBOL_MISMATCH"
+        ]
         self.last_findings_count = len(results)
         self.results_table.setRowCount(0)
 

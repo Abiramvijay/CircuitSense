@@ -7,6 +7,19 @@ def load_circuit(xml_file):
     tree = ET.parse(xml_file)
     root = tree.getroot()
 
+    if root.tag != "export":
+        raise ValueError(
+            "The selected XML file is not a KiCad netlist."
+        )
+
+    if (
+        root.find("./components") is None
+        or root.find("./nets") is None
+    ):
+        raise ValueError(
+            "The KiCad netlist is missing its components or nets section."
+        )
+
     circuit = {
         "components": [],
         "nets": [],
